@@ -1,6 +1,6 @@
 {
     "AWSTemplateFormatVersion": "2010-09-09",
-    "Description": "Creates a EC2 Instance running Jenkins and Docker",
+    "Description": "Creates a EC2 Instance and Load Balancer and install Docker",
 
     "Parameters": {
         "InstanceType": {
@@ -49,14 +49,13 @@
                 "GroupDescription": "Enable SSH access via port 22",
                 "SecurityGroupIngress": [
                     {"IpProtocol": "tcp", "FromPort": "22", "ToPort": "22", "CidrIp": { "Ref": "SSHLocation"}}, 
-                    {"IpProtocol": "tcp", "FromPort": "8080", "ToPort": "8080", "SourceSecurityGroupId": { "Ref": "LBSecurityGroup"}}]
+                    {"IpProtocol": "tcp", "FromPort": "8080", "ToPort": "8080", "CidrIp": "0.0.0.0/0"}]
                 }
           },
 
         "LBSecurityGroup": {
             "Type": "AWS::EC2::SecurityGroup",
             "Properties": {
-                "Tags": [{"Key": "Name", "Value": "sg-lb-jenkins"}],
                 "GroupDescription": "Enables HTTP",
                 "SecurityGroupIngress": [
                     {"IpProtocol": "tcp", "FromPort": "80", "ToPort": "80", "CidrIp": "0.0.0.0/0"}
@@ -66,7 +65,6 @@
 
         "LoadBalancer": {
             "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
-            "LoadBalancerName": "lb-jenkins",
             "Properties": {
                 "AvailabilityZones": { "Fn::GetAZs": {"Ref": "AWS::Region"} },
                 "SecurityGroups": [{"Fn::GetAtt": ["LBSecurityGroup", "GroupId"]}
@@ -115,7 +113,7 @@
                     "# INSTALL DOCKER\n",
                     "apt-get update\n",
                     "apt-get install -y apt-transport-https ca-certificates curl software-properties-common\n",
-                    "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -\n",
+                    "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -\n",
                     "add-apt-repository \"deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\"\n",
                     "apt-get update && apt-get install -y docker-ce\n",
                     "usermod -aG docker ubuntu\n",
@@ -128,17 +126,17 @@
 
                     "# INSTALL JAVA\n",
                     "apt-get update && apt-get install -y\n",
-                    "add-apt-repository ppa:webupd8team/java\n",
+                    "yes '' | add-apt-repository ppa:webupd8team/java\n",
                     "apt-get update -y\n",
-                    "apt-get install oracle-java8-installer\n",
-                    "",
+                    "echo oracle-java8-installer shared/accepted-oracle-license-v1-1 select true | /usr/bin/debconf-set-selections\n",
+                    "apt-get install -y oracle-java8-installer\n",
 
                     "# INSTALL APACHE MAVEN\n",
                     "cd /opt/ && wget http://www-eu.apache.org/dist/maven/maven-3/3.3.9/binaries/apache-maven-3.3.9-bin.tar.gz\n",
                     "tar -xvzf apache-maven-3.3.9-bin.tar.gz\n",
                     "mv apache-maven-3.3.9 maven\n",
-                    ""
-
+                    "echo -e 'export M2_HOME=/opt/maven\nexport PATH=${M2_HOME}/bin:${PATH}' >> /etc/profile.d/mavenenv.sh && chmod +x /etc/profile.d/mavenenv.sh && source /etc/profile.d/mavenenv.sh\n",
+                    "apt-get install -y maven\n" 
                 ]]}}
             }
         },
