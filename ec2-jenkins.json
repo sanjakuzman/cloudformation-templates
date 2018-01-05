@@ -1,14 +1,20 @@
 {
     "AWSTemplateFormatVersion": "2010-09-09",
-    "Description": "Creates a EC2 Instance running Jenkins and Docker",
+    "Description": "Creates a EC2 Instance and Load Balancer and install Docker",
 
     "Parameters": {
+
+        "Project": {
+            "Type": "String"
+        },
+
         "InstanceType": {
             "Description":"EC2 Instance type",
             "Type": "String",
             "Default": "t2.medium",
             "AllowedValues": ["t2.nano","t2.micro", "t2.small", "t2.medium", "t2.large"],
             "ConstraintDescription": "Must select a valid EC2 instance type."
+
         },
 
         "VPC": {
@@ -49,24 +55,31 @@
                 "GroupDescription": "Enable SSH access via port 22",
                 "SecurityGroupIngress": [
                     {"IpProtocol": "tcp", "FromPort": "22", "ToPort": "22", "CidrIp": { "Ref": "SSHLocation"}}, 
-                    {"IpProtocol": "tcp", "FromPort": "8080", "ToPort": "8080", "SourceSecurityGroupId": { "Ref": "LBSecurityGroup"}}]
+                    {"IpProtocol": "tcp", "FromPort": "8080", "ToPort": "8080", "CidrIp": "0.0.0.0/0"}],
+                    "Tags": [{ "Key": "Name", "Value": {"Fn::Sub": "${Project}-instance-sg"}}]
                 }
           },
+
+          "BackupsBucket": {
+            "Type": "AWS::S3::Bucket",
+            "Properties": {
+                "BucketName": {"Ref": "AWS::StackName"},
+                "Tags": [{ "Key": "Name", "Value": {"Fn::Sub": "${Project}-s3"}}]
+            }
+        },
 
         "LBSecurityGroup": {
             "Type": "AWS::EC2::SecurityGroup",
             "Properties": {
-                "Tags": [{"Key": "Name", "Value": "sg-lb-jenkins"}],
                 "GroupDescription": "Enables HTTP",
                 "SecurityGroupIngress": [
-                    {"IpProtocol": "tcp", "FromPort": "80", "ToPort": "80", "CidrIp": "0.0.0.0/0"}
-                ]
+                    {"IpProtocol": "tcp", "FromPort": "80", "ToPort": "80", "CidrIp": "0.0.0.0/0"}],
+                "Tags": [{ "Key": "Name", "Value": {"Fn::Sub": "${Project}-lb-sg"}}]
             }
         },
 
         "LoadBalancer": {
             "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
-            "LoadBalancerName": "lb-jenkins",
             "Properties": {
                 "AvailabilityZones": { "Fn::GetAZs": {"Ref": "AWS::Region"} },
                 "SecurityGroups": [{"Fn::GetAtt": ["LBSecurityGroup", "GroupId"]}
@@ -82,7 +95,8 @@
                     "UnhealthyThreshold": "5",
                     "Interval": "30",
                     "Timeout": "5"
-                }
+                },
+                "Tags": [{ "Key": "Name", "Value": {"Fn::Sub": "${Project}-lb"}}]
             }
         },
 
@@ -126,19 +140,46 @@
                     "apt-get update && apt-get install -y jenkins\n",
                     "usermod -a -G docker jenkins\n\n",
 
+                    "# RESTORE BACKUPS\n",
+                    "aws s3 cp s3://", {"Ref": "BackupsBucket"}, "/latest/config.xml /var/lib/jenkins/config.xml\n",
+                    "aws s3 sync s3://", {"Ref": "BackupsBucket"}, "/latest/users /var/lib/jenkins/users\n",
+                    "aws s3 sync s3://", {"Ref": "BackupsBucket"}, "/latest/jobs /var/lib/jenkins/jobs\n",
+                    "aws s3 sync s3://", {"Ref": "BackupsBucket"}, "/latest/plugins /var/lib/jenkins/plugins\n",
+                    "chown -R jenkins:jenkins /var/lib/jenkins\n",
+                    "service jenkins restart\n\n",
+
+                    "# BACKUP CRONJOBS\n",
+                    "echo '#!/bin/sh' > /etc/cron.weekly/jenkins-backups\n",
+                    "chmod +x /etc/cron.weekly/jenkins-backups\n",
+                    "echo 'aws s3 cp /var/lib/jenkins/config.xml s3://", {"Ref": "BackupsBucket"}, "/`date +%Y-%m-%d`/config.xml' >> /etc/cron.weekly/jenkins-backups\n",
+                    "echo 'aws s3 cp --recursive /var/lib/jenkins/users s3://", {"Ref": "BackupsBucket"}, "/`date +%Y-%m-%d`/users' >> /etc/cron.weekly/jenkins-backups\n",
+                    "echo 'aws s3 cp --recursive /var/lib/jenkins/jobs s3://", {"Ref": "BackupsBucket"}, "/`date +%Y-%m-%d`/jobs' >> /etc/cron.weekly/jenkins-backups\n",
+                    "echo 'aws s3 cp --recursive /var/lib/jenkins/plugins s3://", {"Ref": "BackupsBucket"}, "/`date +%Y-%m-%d`/plugins' >> /etc/cron.weekly/jenkins-backups\n",
+                    "echo 'aws s3 cp /var/lib/jenkins/config.xml s3://", {"Ref": "BackupsBucket"}, "/latest/config.xml' >> /etc/cron.weekly/jenkins-backups\n",
+                    "echo 'aws s3 sync /var/lib/jenkins/users s3://", {"Ref": "BackupsBucket"}, "/latest/users' >> /etc/cron.weekly/jenkins-backups\n",
+                    "echo 'aws s3 sync /var/lib/jenkins/jobs s3://", {"Ref": "BackupsBucket"}, "/latest/jobs' >> /etc/cron.weekly/jenkins-backups\n",
+                    "echo 'aws s3 sync /var/lib/jenkins/plugins s3://", {"Ref": "BackupsBucket"}, "/latest/plugins' >> /etc/cron.weekly/jenkins-backups\n\n",
+
                     "# INSTALL JAVA\n",
                     "apt-get update && apt-get install -y\n",
                     "yes '' | add-apt-repository ppa:webupd8team/java\n",
                     "apt-get update -y\n",
                     "echo oracle-java8-installer shared/accepted-oracle-license-v1-1 select true | /usr/bin/debconf-set-selections\n",
-                    "apt-get install -y oracle-java8-installer",
+                    "apt-get install -y oracle-java8-installer\n",
 
                     "# INSTALL APACHE MAVEN\n",
                     "cd /opt/ && wget http://www-eu.apache.org/dist/maven/maven-3/3.3.9/binaries/apache-maven-3.3.9-bin.tar.gz\n",
                     "tar -xvzf apache-maven-3.3.9-bin.tar.gz\n",
                     "mv apache-maven-3.3.9 maven\n",
                     "echo -e 'export M2_HOME=/opt/maven\nexport PATH=${M2_HOME}/bin:${PATH}' >> /etc/profile.d/mavenenv.sh && chmod +x /etc/profile.d/mavenenv.sh && source /etc/profile.d/mavenenv.sh\n",
-                    "apt-get install -y maven\n" 
+                    "apt-get install -y maven\n",
+
+                    "# RUN SIGNAL\n",
+                    "cfn-signal -e $?",
+                    " --resource  AutoScalingGroup",
+                    " --stack ",  {"Ref": "AWS::StackName"},
+                    " --region ", {"Ref": "AWS::Region"}, "\n"
+
                 ]]}}
             }
         },
@@ -151,8 +192,52 @@
                 "MaxSize": "1",
                 "DesiredCapacity": "1",
                 "LoadBalancerNames": [ { "Ref": "LoadBalancer" } ],
-                "AvailabilityZones": { "Fn::GetAZs": {"Ref": "AWS::Region"} }
+                "AvailabilityZones": { "Fn::GetAZs": {"Ref": "AWS::Region"} },
+
             }
         }
-    } 
+    },
+
+    "Outputs": {
+        "OutputVPC": {
+            "Description": "VPC ID",
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-vpc-id"}},
+            "Value":  {"Ref": "VPC"}
+        },
+
+        "OutputInstanceSecurityGroup": {
+            "Description": "Instance Security Group",
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-sg-instance"}},
+            "Value":  {"Ref": "InstanceSecurityGroup"}
+        },
+
+        "OutputBackupsBucket": {
+            "Description": "Backups Bucket",
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-s3-id"}},
+            "Value":  {"Ref": "BackupsBucket"}
+        },
+
+        "OutputLBSecurityGroup": {
+            "Description": "LB SecurityGroup",
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-lb-security-group"}},
+            "Value":  {"Ref": "LBSecurityGroup"}
+        },
+        "OutputLoadBalancer": {
+            "Description": "Load Balancer",
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-lb-id"}},
+            "Value":  {"Ref": "LoadBalancer"}
+        },
+        "OutputLaunchConfig": {
+            "Description": "Launch Configuration",
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-launch-configuration"}},
+            "Value":  {"Ref": "LaunchConfig"}
+        },
+
+        "OutputAutoScalingGroup": {
+            "Description": "Auto ScalingGroup",
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-auto-scaling-group"}},
+            "Value":  {"Ref": "AutoScalingGroup"}
+        }
+
+    }
 }
