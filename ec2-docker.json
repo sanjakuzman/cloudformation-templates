@@ -3,18 +3,12 @@
     "Description": "Creates a EC2 Instance and Load Balancer and install Docker",
 
     "Parameters": {
-
-        "Project": {
-            "Type": "String"
-        },
-
         "InstanceType": {
             "Description":"EC2 Instance type",
             "Type": "String",
             "Default": "t2.medium",
             "AllowedValues": ["t2.nano","t2.micro", "t2.small", "t2.medium", "t2.large"],
             "ConstraintDescription": "Must select a valid EC2 instance type."
-
         },
 
         "VPC": {
@@ -55,28 +49,26 @@
                 "GroupDescription": "Enable SSH access via port 22",
                 "SecurityGroupIngress": [
                     {"IpProtocol": "tcp", "FromPort": "22", "ToPort": "22", "CidrIp": { "Ref": "SSHLocation"}}, 
-                    {"IpProtocol": "tcp", "FromPort": "8080", "ToPort": "8080", "CidrIp": "0.0.0.0/0"}],
-                "Tags": [{ "Key": "Name", "Value": {"Fn::Sub": "${Project}-instance-sg"}}],
-                "VpcId": {"Ref": "VPC"}
-            }
+                    {"IpProtocol": "tcp", "FromPort": "80", "ToPort": "80", "CidrIp": "0.0.0.0/0"}]
+                }
           },
 
         "LBSecurityGroup": {
             "Type": "AWS::EC2::SecurityGroup",
             "Properties": {
-                "GroupDescription": "Enables HTTP",
+                "GroupDescription": "Enables SSH access via port 22",
                 "SecurityGroupIngress": [
-                    {"IpProtocol": "tcp", "FromPort": "80", "ToPort": "80", "CidrIp": "0.0.0.0/0"}],
-                "Tags": [{ "Key": "Name", "Value": {"Fn::Sub": "${Project}-lb-sg"}}],
-                "VpcId": {"Ref": "VPC"}
+                    {"IpProtocol": "tcp", "FromPort": "80", "ToPort": "80", "CidrIp": "0.0.0.0/0"}
+                ]
             }
         },
 
         "LoadBalancer": {
             "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
             "Properties": {
-                "Subnets":{"Ref": "Subnets"},
-                "SecurityGroups": [{"Fn::GetAtt": ["LBSecurityGroup", "GroupId"]}
+                "AvailabilityZones": { "Fn::GetAZs": {"Ref": "AWS::Region"} },
+                "SecurityGroups": [
+                    {"Fn::GetAtt": ["LBSecurityGroup", "GroupId"]}
                 ],
                 "Listeners": [{
                     "LoadBalancerPort": "80",
@@ -89,8 +81,7 @@
                     "UnhealthyThreshold": "5",
                     "Interval": "30",
                     "Timeout": "5"
-                },
-                "Tags": [{ "Key": "Name", "Value": {"Fn::Sub": "${Project}-lb"}}]
+                }
             }
         },
 
@@ -102,57 +93,20 @@
                 "SecurityGroups": [ { "Ref": "InstanceSecurityGroup" } ],
                 "InstanceType": { "Ref": "InstanceType" },
                 "UserData": {"Fn::Base64": {"Fn::Join": ["", [
-                    "#!/bin/bash -x\n",
+                    "#!/bin/bash -xe\n",
                     "exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1\n",
 
                     "# INSTALL TOOLS\n",
                     "apt-get update && apt-get -y install python python-pip wget\n",
                     "pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz\n",
 
-                    "# INSTALL AWS TOOLS\n",
-                    "pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz\n",
-                    "pip install awscli\n",
-                    "aws configure set default.region ", {"Ref": "AWS::Region"}, "\n\n",
-
-                    "# RUN INIT\n",
-                    "cfn-init -v",
-                    " --resource  LaunchConfiguration",
-                    " --stack ",  {"Ref": "AWS::StackName"},
-                    " --region ", {"Ref": "AWS::Region"}, "\n\n",
-
                     "# INSTALL DOCKER\n",
                     "apt-get update\n",
                     "apt-get install -y apt-transport-https ca-certificates curl software-properties-common\n",
-                    "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -\n",
+                    "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -\n",
                     "add-apt-repository \"deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\"\n",
                     "apt-get update && apt-get install -y docker-ce\n",
-                    "usermod -aG docker ubuntu\n",
-
-                    "# INSTALL JENKINS\n",
-                    "wget -q -O - https://pkg.jenkins.io/debian/jenkins.io.key | apt-key add -\n",
-                    "sh -c 'echo deb http://pkg.jenkins.io/debian-stable binary/ > /etc/apt/sources.list.d/jenkins.list'\n",
-                    "apt-get update && apt-get install -y jenkins\n",
-                    "usermod -a -G docker jenkins\n\n",
-
-                    "# INSTALL JAVA\n",
-                    "apt-get update && apt-get install -y\n",
-                    "yes '' | add-apt-repository ppa:webupd8team/java\n",
-                    "apt-get update -y\n",
-                    "echo oracle-java8-installer shared/accepted-oracle-license-v1-1 select true | /usr/bin/debconf-set-selections\n",
-                    "apt-get install -y oracle-java8-installer\n",
-
-                    "# INSTALL APACHE MAVEN\n",
-                    "cd /opt/ && wget http://www-eu.apache.org/dist/maven/maven-3/3.3.9/binaries/apache-maven-3.3.9-bin.tar.gz\n",
-                    "tar -xvzf apache-maven-3.3.9-bin.tar.gz\n",
-                    "mv apache-maven-3.3.9 maven\n",
-                    "echo -e 'export M2_HOME=/opt/maven\nexport PATH=${M2_HOME}/bin:${PATH}' >> /etc/profile.d/mavenenv.sh && chmod +x /etc/profile.d/mavenenv.sh && source /etc/profile.d/mavenenv.sh\n",
-                    "apt-get install -y maven\n",
-
-                    "# RUN SIGNAL\n",
-                    "cfn-signal -e $?",
-                    " --resource  AutoScalingGroup",
-                    " --stack ",  {"Ref": "AWS::StackName"},
-                    " --region ", {"Ref": "AWS::Region"}, "\n"
+                    "usermod -aG docker ubuntu\n"
 
                 ]]}}
             }
@@ -166,45 +120,8 @@
                 "MaxSize": "1",
                 "DesiredCapacity": "1",
                 "LoadBalancerNames": [ { "Ref": "LoadBalancer" } ],
-                "VPCZoneIdentifier": { "Ref": "Subnets" } 
+                "AvailabilityZones": { "Fn::GetAZs": {"Ref": "AWS::Region"} }
             }
         }
-    },
-
-    "Outputs": {
-        "OutputVPC": {
-            "Description": "VPC ID",
-            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-vpc-id"}},
-            "Value":  {"Ref": "VPC"}
-        },
-
-        "OutputInstanceSecurityGroup": {
-            "Description": "Instance Security Group",
-            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-sg-instance"}},
-            "Value":  {"Ref": "InstanceSecurityGroup"}
-        },
-
-        "OutputLBSecurityGroup": {
-            "Description": "LB SecurityGroup",
-            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-lb-security-group"}},
-            "Value":  {"Ref": "LBSecurityGroup"}
-        },
-        "OutputLoadBalancer": {
-            "Description": "Load Balancer",
-            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-lb-id"}},
-            "Value":  {"Ref": "LoadBalancer"}
-        },
-        "OutputLaunchConfig": {
-            "Description": "Launch Configuration",
-            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-launch-configuration"}},
-            "Value":  {"Ref": "LaunchConfig"}
-        },
-
-        "OutputAutoScalingGroup": {
-            "Description": "Auto ScalingGroup",
-            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-auto-scaling-group"}},
-            "Value":  {"Ref": "AutoScalingGroup"}
-        }
-
-    }
+    } 
 }
